@@ -1,6 +1,6 @@
-# StudyMate+ 🎓
+# StudyMate🎓
 
-**StudyMate+** is an advanced AI-powered study companion designed to transform how students engage with their learning materials. By combining document management, intelligent Q&A, and productivity tools, it provides a seamless environment for mastering any subject.
+**StudyMate** is an advanced AI-powered study companion designed to transform how students engage with their learning materials. By combining document management, intelligent Q&A, and productivity tools, it provides a seamless environment for mastering any subject.
 
 ## ✨ Key Features
 
@@ -30,8 +30,8 @@
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/HARSHITHAPRIYAJAVAJI/STUDY-MATE-.git
-    cd STUDY-MATE-
+    git clone https://github.com/Thrisha1411/StudyMate.git
+    cd StudyMate
     ```
 
 2.  **Install Frontend Dependencies**

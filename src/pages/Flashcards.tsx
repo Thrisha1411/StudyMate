@@ -449,9 +449,7 @@ export function Flashcards() {
                 <h1 className="text-3xl font-bold bg-gradient-to-r from-[#603DD9] via-[#7B42E2] to-[#9E4CEC] bg-clip-text text-transparent tracking-tight">
                     Smart Flashcard Decks
                 </h1>
-                <p className="text-slate-500 max-w-lg mx-auto text-xs sm:text-sm font-normal">
-                    Active recall flashcard decks separated by document, with PDF export and card management.
-                </p>
+                
             </div>
 
             {/* AI Flashcard Generator Card */}
@@ -610,7 +608,7 @@ export function Flashcards() {
 
             {/* Flashcard Viewer */}
             {currentDeckCards.length > 0 ? (
-                <div className="max-w-3xl mx-auto space-y-5">
+                <div className="max-w-xl mx-auto space-y-3.5">
                     {/* Top Bar: Progress & Tools for Current Deck */}
                     <div className="flex flex-wrap items-center justify-between text-xs px-1 gap-2">
                         <div className="flex items-center gap-2 sm:gap-3">
@@ -656,7 +654,7 @@ export function Flashcards() {
 
                     {/* Card Container (3D Flip) */}
                     <div
-                        className="relative h-[360px] sm:h-[390px] cursor-pointer group select-none"
+                        className="relative h-[215px] sm:h-[235px] cursor-pointer group select-none"
                         style={{ perspective: '1200px' }}
                         onClick={() => setFlipped(!flipped)}
                     >
@@ -669,60 +667,60 @@ export function Flashcards() {
                         >
                             {/* Front: Question */}
                             <Card
-                                className={`absolute inset-0 bg-white shadow-xl border border-purple-100/70 rounded-3xl overflow-hidden flex flex-col justify-between p-7 sm:p-10 transition-all group-hover:shadow-2xl ${
+                                className={`absolute inset-0 bg-white shadow-lg border border-purple-100/70 rounded-2xl overflow-hidden flex flex-col justify-between p-4 sm:p-5 transition-all group-hover:shadow-xl ${
                                     isCurrentMastered ? 'ring-2 ring-emerald-500/50' : ''
                                 }`}
                                 style={{ backfaceVisibility: 'hidden' }}
                             >
                                 <div className="flex items-center justify-between w-full">
-                                    <span className="inline-flex items-center gap-1.5 text-xs font-black text-[#603DD9] uppercase tracking-wider bg-purple-50 px-3 py-1 rounded-full border border-purple-100">
-                                        <HelpCircle className="w-3.5 h-3.5" /> Question
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-black text-[#603DD9] uppercase tracking-wider bg-purple-50 px-2.5 py-0.5 rounded-full border border-purple-100">
+                                        <HelpCircle className="w-3 h-3" /> Question
                                     </span>
                                     {isCurrentMastered && (
-                                        <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                                            <CheckCircle2 className="w-3.5 h-3.5" /> Mastered
+                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                            <CheckCircle2 className="w-3 h-3" /> Mastered
                                         </span>
                                     )}
                                 </div>
 
-                                <div className="text-center my-auto px-2">
-                                    <h2 className="text-xl sm:text-2xl font-normal text-slate-800 leading-snug">
+                                <div className="text-center my-auto px-2 overflow-y-auto max-h-[110px] sm:max-h-[125px]">
+                                    <h2 className="text-base sm:text-lg font-medium text-slate-800 leading-snug">
                                         {activeCard.question}
                                     </h2>
                                 </div>
 
-                                <div className="flex items-center justify-center gap-2 text-slate-400 text-xs font-medium bg-slate-50/90 border border-slate-100 px-4 py-1.5 rounded-full w-fit mx-auto">
-                                    <RotateCw className="w-3.5 h-3.5 text-[#603DD9]" />
-                                    Click or press Space to reveal answer
+                                <div className="flex items-center justify-center gap-1.5 text-slate-400 text-[11px] font-medium bg-slate-50/90 border border-slate-100 px-3 py-1 rounded-full w-fit mx-auto">
+                                    <RotateCw className="w-3 h-3 text-[#603DD9]" />
+                                    Click or Space to flip
                                 </div>
                             </Card>
 
                             {/* Back: Answer */}
                             <Card
-                                className="absolute inset-0 bg-gradient-to-br from-[#603DD9] via-[#7B42E2] to-[#9E4CEC] text-white shadow-2xl rounded-3xl overflow-hidden flex flex-col justify-between p-7 sm:p-10"
+                                className="absolute inset-0 bg-gradient-to-br from-[#603DD9] via-[#7B42E2] to-[#9E4CEC] text-white shadow-xl rounded-2xl overflow-hidden flex flex-col justify-between p-4 sm:p-5"
                                 style={{
                                     backfaceVisibility: 'hidden',
                                     transform: 'rotateY(180deg)'
                                 }}
                             >
                                 <div className="flex items-center justify-between w-full">
-                                    <span className="inline-flex items-center gap-1.5 text-xs font-black text-purple-100 uppercase tracking-wider bg-white/15 px-3 py-1 rounded-full backdrop-blur-sm border border-white/20">
-                                        <BookOpen className="w-3.5 h-3.5" /> Answer
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-black text-purple-100 uppercase tracking-wider bg-white/15 px-2.5 py-0.5 rounded-full backdrop-blur-sm border border-white/20">
+                                        <BookOpen className="w-3 h-3" /> Answer
                                     </span>
-                                    <span className="text-xs text-purple-200 font-semibold max-w-[200px] truncate">
+                                    <span className="text-[11px] text-purple-200 font-medium max-w-[160px] truncate">
                                         {activeCard.tag || activeDeckName}
                                     </span>
                                 </div>
 
-                                <div className="text-center my-auto px-2 overflow-y-auto max-h-[220px]">
-                                    <p className="text-lg sm:text-xl text-white font-semibold leading-relaxed">
+                                <div className="text-center my-auto px-2 overflow-y-auto max-h-[110px] sm:max-h-[125px]">
+                                    <p className="text-sm sm:text-base text-white font-medium leading-relaxed">
                                         {activeCard.answer}
                                     </p>
                                 </div>
 
-                                <div className="flex items-center justify-center gap-2 text-purple-200 text-xs font-medium bg-white/10 px-4 py-1.5 rounded-full w-fit mx-auto backdrop-blur-sm">
-                                    <RotateCw className="w-3.5 h-3.5" />
-                                    Click or press Space to see question
+                                <div className="flex items-center justify-center gap-1.5 text-purple-200 text-[11px] font-medium bg-white/10 px-3 py-1 rounded-full w-fit mx-auto backdrop-blur-sm">
+                                    <RotateCw className="w-3 h-3" />
+                                    Click or Space to flip
                                 </div>
                             </Card>
                         </div>

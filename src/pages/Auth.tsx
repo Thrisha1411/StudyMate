@@ -9,6 +9,7 @@ interface AuthProps {
 }
 
 import { supabase } from '@/lib/supabase'
+import { API_BASE_URL } from '@/lib/api'
 
 export function Auth({ onAuth }: AuthProps) {
     const [isLogin, setIsLogin] = useState(true)
@@ -24,27 +25,57 @@ export function Auth({ onAuth }: AuthProps) {
         setLoading(true)
         setError(null)
 
+        const trimmedEmail = email.trim()
+
         try {
             if (isLogin) {
-                // Login
+                // Login (normalize email to lowercase)
                 const { error } = await supabase.auth.signInWithPassword({
-                    email,
+                    email: trimmedEmail.toLowerCase(),
                     password,
                 })
-                if (error) throw error
+                if (error) {
+                    // If login failed with Invalid login credentials, provide clear guidance
+                    if (error.message?.toLowerCase().includes('invalid login credentials')) {
+                        throw new Error('Invalid email or password. Please double-check your credentials or click "Sign up" to create/reset your account.')
+                    }
+                    throw error
+                }
             } else {
-                // Sign Up
-                const { error } = await supabase.auth.signUp({
-                    email,
-                    password,
-                    options: {
-                        data: {
-                            full_name: fullName,
+                // Sign Up via backend endpoint with auto-confirmation to bypass unconfirmed email requirement
+                try {
+                    const res = await fetch(`${API_BASE_URL}/api/auth/signup`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: trimmedEmail,
+                            password,
+                            fullName: fullName.trim(),
+                        }),
+                    })
+                    const data = await res.json()
+                    if (!res.ok || !data.success) {
+                        throw new Error(data.error || 'Failed to create account')
+                    }
+                } catch (apiErr: any) {
+                    // Fallback to client signup if backend is unreachable
+                    console.warn('Backend signup fallback:', apiErr.message)
+                    const { error } = await supabase.auth.signUp({
+                        email: trimmedEmail,
+                        password,
+                        options: {
+                            data: { full_name: fullName.trim() },
                         },
-                    },
+                    })
+                    if (error) throw error
+                }
+
+                // Immediately sign in user with the confirmed credentials
+                const { error: loginErr } = await supabase.auth.signInWithPassword({
+                    email: trimmedEmail,
+                    password,
                 })
-                if (error) throw error
-                // For email confirmation flows, you might want to show a message here
+                if (loginErr) throw loginErr
             }
             onAuth()
         } catch (err: any) {

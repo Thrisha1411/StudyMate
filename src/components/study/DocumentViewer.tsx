@@ -141,9 +141,10 @@ interface DocumentViewerProps {
     url: string
     title: string
     isImage?: boolean
+    targetPage?: number
 }
 
-export function DocumentViewer({ url, title, isImage }: DocumentViewerProps) {
+export function DocumentViewer({ url, title, isImage, targetPage }: DocumentViewerProps) {
     const [numPages, setNumPages] = useState<number>(0)
     const [scale, setScale] = useState<number>(1.2)
     const [rotation, setRotation] = useState<number>(0)
@@ -155,6 +156,17 @@ export function DocumentViewer({ url, title, isImage }: DocumentViewerProps) {
 
     const containerRef = useRef<HTMLDivElement>(null)
     const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+
+    // Scroll to targetPage when provided
+    useEffect(() => {
+        if (targetPage && targetPage > 0 && targetPage <= numPages) {
+            const el = pageRefs.current.get(targetPage)
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                setCurrentPage(targetPage)
+            }
+        }
+    }, [targetPage, numPages])
 
     // Load PDF Document
     useEffect(() => {

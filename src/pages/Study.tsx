@@ -23,12 +23,69 @@ import {
     Sparkles,
     Menu,
     Loader2,
+    Mic,
+    MicOff,
+    Volume2,
+    VolumeX,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { API_BASE_URL, fetchWithAuth } from '@/lib/api'
 import { Link } from 'react-router-dom'
 
 const DocumentViewer = lazy(() => import('@/components/study/DocumentViewer').then(m => ({ default: m.DocumentViewer })))
+
+function parseReferencesFromText(text: string): Array<{ documentId?: string, documentTitle: string, pageNumber: number }> {
+    const refs: Array<{ documentId?: string, documentTitle: string, pageNumber: number }> = [];
+    if (!text) return refs;
+    const refSection = text.split(/📖\s*\*\*Referenced Sources & Pages:\*\*/i)[1];
+    if (refSection) {
+        const lines = refSection.split('\n');
+        for (const line of lines) {
+            const match = line.match(/\*\*(.*?)\*\*.*?Page\s*(\d+)/i);
+            if (match) {
+                refs.push({
+                    documentTitle: match[1].trim(),
+                    pageNumber: parseInt(match[2], 10)
+                });
+                // Stop after the first match to show ONLY the exact primary page context was taken from
+                break;
+            }
+        }
+    }
+    return refs;
+}
+
+function cleanTextForSpeech(markdown: string): string {
+    if (!markdown) return '';
+    return markdown
+        // Remove reference and source sections at the end
+        .split(/📖\s*\*\*Referenced Sources & Pages:\*\*/i)[0]
+        .split(/---\s*\nℹ️\s*\*Answered from general knowledge/i)[0]
+        // Remove code blocks
+        .replace(/```[\s\S]*?```/g, ' Code snippet omitted. ')
+        .replace(/`([^`]+)`/g, '$1')
+        // Clean LaTeX math symbols
+        .replace(/\\\$/g, ' dollar ')
+        .replace(/\$([^\$]+)\$/g, '$1')
+        // Remove image markdown
+        .replace(/!\[.*?\]\(.*?\)/g, '')
+        // Remove markdown links but keep text
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        // Remove headers
+        .replace(/#{1,6}\s+/g, '')
+        // Remove bold, italic, strikethrough
+        .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, '$1')
+        // Remove blockquotes, horizontal rules
+        .replace(/^\s*>\s+/gm, '')
+        .replace(/---+/g, '')
+        // Remove bullet list indicators
+        .replace(/^\s*[-*+]\s+/gm, '')
+        .replace(/^\s*\d+\.\s+/gm, '')
+        // Collapse spaces
+        .replace(/\s+/g, ' ')
+        .trim();
+}
 
 export function Study() {
     // --- State Management ---
@@ -39,6 +96,7 @@ export function Study() {
     const [documents, setDocuments] = useState<any[]>([])
     const [previewDoc, setPreviewDoc] = useState<any | null>(null)
     const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+    const [targetPage, setTargetPage] = useState<number | undefined>(undefined)
 
     // Chat State
     const [message, setMessage] = useState('')
@@ -47,12 +105,188 @@ export function Study() {
         role: 'user' | 'assistant'
         content: string
         timestamp: Date
+        references?: Array<{ documentId?: string, documentTitle: string, pageNumber: number }>
     }>>([])
     const [isLoading, setIsLoading] = useState(false)
     const [sessionId, setSessionId] = useState<string | null>(null)
     const [sessions, setSessions] = useState<any[]>([])
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
     const [editText, setEditText] = useState('')
+
+    // Speech States (STT and TTS)
+    const [isListening, setIsListening] = useState(false)
+    const [isSpeaking, setIsSpeaking] = useState(false)
+    const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null)
+    const recognitionRef = useRef<any>(null)
+    const baseMessageRef = useRef<string>('')
+
+    // --- Text to Speech (TTS) ---
+    const stopSpeaking = useCallback(() => {
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel()
+        }
+        setIsSpeaking(false)
+        setSpeakingMessageId(null)
+    }, [])
+
+    const speakText = useCallback((rawText: string, messageId?: string) => {
+        if (!('speechSynthesis' in window)) {
+            toast.error("Text-to-speech is not supported in this browser.")
+            return
+        }
+
+        const targetId = messageId || 'chatbox'
+
+        // Toggle off if currently speaking this same target
+        if (isSpeaking && speakingMessageId === targetId) {
+            stopSpeaking()
+            return
+        }
+
+        // Cancel any ongoing speech
+        window.speechSynthesis.cancel()
+
+        const cleaned = cleanTextForSpeech(rawText)
+        if (!cleaned) {
+            toast.info("No readable text to speak.")
+            return
+        }
+
+        const utterance = new SpeechSynthesisUtterance(cleaned)
+        utterance.rate = 1.0
+        utterance.pitch = 1.0
+        utterance.lang = 'en-US'
+
+        utterance.onstart = () => {
+            setIsSpeaking(true)
+            setSpeakingMessageId(targetId)
+        }
+
+        utterance.onend = () => {
+            setIsSpeaking(false)
+            setSpeakingMessageId(null)
+        }
+
+        utterance.onerror = (e) => {
+            console.warn("TTS error:", e)
+            setIsSpeaking(false)
+            setSpeakingMessageId(null)
+        }
+
+        window.speechSynthesis.speak(utterance)
+    }, [isSpeaking, speakingMessageId, stopSpeaking])
+
+    const toggleTtsLatest = useCallback(() => {
+        if (isSpeaking) {
+            stopSpeaking()
+            return
+        }
+        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant')
+        if (!lastAssistantMsg) {
+            toast.info("No AI tutor response to read yet.")
+            return
+        }
+        speakText(lastAssistantMsg.content, 'chatbox')
+    }, [isSpeaking, messages, speakText, stopSpeaking])
+
+    // --- Speech to Text (STT) ---
+    const toggleListening = useCallback(() => {
+        if (isListening) {
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.stop()
+                } catch (_) {}
+                recognitionRef.current = null
+            }
+            setIsListening(false)
+            return
+        }
+
+        const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        if (!SpeechRecognitionClass) {
+            toast.error("Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.")
+            return
+        }
+
+        try {
+            const recognition = new SpeechRecognitionClass()
+            recognition.continuous = true
+            recognition.interimResults = true
+            recognition.lang = 'en-US'
+
+            baseMessageRef.current = message
+
+            recognition.onstart = () => {
+                setIsListening(true)
+                baseMessageRef.current = message
+            }
+
+            recognition.onresult = (event: any) => {
+                let finalTranscript = ''
+                let interimTranscript = ''
+
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript
+                    } else {
+                        interimTranscript += transcript
+                    }
+                }
+
+                const transcript = (finalTranscript || interimTranscript).trim()
+                if (transcript) {
+                    const prefix = baseMessageRef.current.trim()
+                    const spacer = prefix ? ' ' : ''
+                    setMessage(prefix + spacer + transcript)
+                    if (finalTranscript) {
+                        baseMessageRef.current = (prefix + spacer + finalTranscript).trim()
+                    }
+                }
+            }
+
+            recognition.onerror = (event: any) => {
+                console.warn("Speech recognition error:", event.error)
+                if (event.error === 'not-allowed' || event.error === 'permission-denied') {
+                    toast.error("Microphone access denied. Please allow microphone permissions.")
+                } else if (event.error === 'no-speech') {
+                    toast.info("No speech detected.")
+                } else if (event.error !== 'aborted') {
+                    toast.error(`Speech recognition: ${event.error}`)
+                }
+                setIsListening(false)
+                recognitionRef.current = null
+            }
+
+            recognition.onend = () => {
+                setIsListening(false)
+                recognitionRef.current = null
+            }
+
+            recognition.start()
+            recognitionRef.current = recognition
+        } catch (err: any) {
+            console.error("Speech recognition start failed:", err)
+            toast.error("Failed to start speech recognition: " + err.message)
+            setIsListening(false)
+            recognitionRef.current = null
+        }
+    }, [isListening, message])
+
+    // Cleanup speech synthesis and recognition on unmount
+    useEffect(() => {
+        return () => {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel()
+            }
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.stop()
+                } catch (_) {}
+                recognitionRef.current = null
+            }
+        }
+    }, [])
 
     // Layout State
     const [focusMode, setFocusMode] = useState(false)
@@ -288,6 +522,18 @@ export function Study() {
         }
     }
 
+    const handleJumpToPage = async (docId?: string, pageNum?: number, docTitle?: string) => {
+        if (pageNum) {
+            setTargetPage(pageNum)
+        }
+        const foundDoc = documents.find(d => (docId && d.id === docId) || (docTitle && d.title?.toLowerCase() === docTitle.toLowerCase()))
+        if (foundDoc) {
+            if (previewDoc?.id !== foundDoc.id) {
+                await loadPreview(foundDoc)
+            }
+        }
+    }
+
     const toggleDocument = (id: string) => {
         setSelectedDocuments(prev => {
             if (prev.includes(id)) {
@@ -345,6 +591,14 @@ export function Study() {
     const handleSend = async () => {
         if (!message.trim()) return
 
+        // Stop any active speech synthesis or listening
+        stopSpeaking()
+        if (recognitionRef.current) {
+            try { recognitionRef.current.stop() } catch (_) {}
+            recognitionRef.current = null
+            setIsListening(false)
+        }
+
         const userMessage = {
             id: Date.now().toString(),
             role: 'user' as const,
@@ -382,6 +636,7 @@ export function Study() {
                 role: 'assistant' as const,
                 content: data.response || "No response generated.",
                 timestamp: new Date(),
+                references: data.references || []
             }
             setMessages(prev => [...prev, aiMessage])
 
@@ -439,6 +694,7 @@ export function Study() {
                 role: 'assistant' as const,
                 content: data.response || "No response.",
                 timestamp: new Date(),
+                references: data.references || []
             }
             setMessages(prev => [...prev, aiMessage])
             if (sessionId) await supabase.from('qa_messages').insert({ session_id: sessionId, role: 'assistant', content: aiMessage.content })
@@ -663,6 +919,7 @@ export function Study() {
                                     url={previewUrl}
                                     title={previewDoc?.title || "Document"}
                                     isImage={!!previewDoc?.file_path.match(/\.(jpg|jpeg|png|gif|webp)$/i)}
+                                    targetPage={targetPage}
                                 />
                             </Suspense>
                         ) : (
@@ -874,11 +1131,68 @@ export function Study() {
                                                 </div>
                                             )}
 
+                                            {/* Context-Aware Referenced Pages Jump Pills - Exact Single Page */}
+                                            {msg.role === 'assistant' && (() => {
+                                                const parsedTextRefs = parseReferencesFromText(msg.content);
+                                                const rawRefs = (parsedTextRefs && parsedTextRefs.length > 0)
+                                                    ? parsedTextRefs
+                                                    : (msg.references && msg.references.length > 0 ? msg.references : []);
+                                                // Show strictly the exact single page the context has been taken from
+                                                const exactRefs = (rawRefs && rawRefs.length > 0) ? rawRefs.slice(0, 1) : [];
+                                                if (exactRefs.length === 0) return null;
+                                                return (
+                                                    <div className="flex flex-wrap items-center gap-1.5 pt-1.5 animate-in fade-in">
+                                                        <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                                                            <BookOpen className="w-3 h-3 text-[#603DD9]" /> Jump to:
+                                                        </span>
+                                                        {exactRefs.map((ref, idx) => (
+                                                            <button
+                                                                key={idx}
+                                                                onClick={() => handleJumpToPage(ref.documentId, ref.pageNumber, ref.documentTitle)}
+                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-purple-50 hover:bg-purple-100 text-[#603DD9] border border-purple-200/70 shadow-2xs transition-all hover:scale-102 active:scale-98 cursor-pointer"
+                                                                title={`Open ${ref.documentTitle} at Page ${ref.pageNumber}`}
+                                                            >
+                                                                <span className="truncate max-w-[150px] font-medium">{ref.documentTitle}</span>
+                                                                <span className="bg-[#603DD9] text-white px-1.5 py-0.2 rounded text-[10px] font-bold">p. {ref.pageNumber}</span>
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })()}
+
                                             {/* Message Actions */}
                                             {msg.role === 'user' && !editingMessageId && (
                                                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end pt-1">
                                                     <button onClick={() => { setEditText(msg.content); setEditingMessageId(msg.id); }} aria-label="Edit message" className="p-1 hover:bg-slate-100 rounded-md text-slate-500 hover:text-[#603DD9] transition-colors" title="Edit Message"><Pencil className="w-3 h-3" /></button>
                                                     <button onClick={() => deleteMessage(msg.id)} aria-label="Delete message" className="p-1 hover:bg-red-50 rounded-md text-slate-500 hover:text-red-500 transition-colors" title="Delete Message"><Trash2 className="w-3 h-3" /></button>
+                                                </div>
+                                            )}
+                                            {/* Assistant Message Actions (Text to Speech) */}
+                                            {msg.role === 'assistant' && (
+                                                <div className="flex items-center gap-1.5 pt-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => speakText(msg.content, msg.id)}
+                                                        aria-label={speakingMessageId === msg.id ? "Stop reading" : "Read aloud"}
+                                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-semibold transition-all ${
+                                                            speakingMessageId === msg.id
+                                                                ? 'bg-purple-100 text-[#603DD9] ring-1 ring-[#603DD9]/30 animate-pulse'
+                                                                : 'text-slate-500 hover:text-[#603DD9] hover:bg-purple-50'
+                                                        }`}
+                                                        title={speakingMessageId === msg.id ? "Stop reading aloud" : "Read aloud (Text to Speech)"}
+                                                    >
+                                                        {speakingMessageId === msg.id ? (
+                                                            <>
+                                                                <VolumeX className="w-3 h-3 text-[#603DD9]" />
+                                                                <span>Stop</span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Volume2 className="w-3 h-3" />
+                                                                <span>Listen</span>
+                                                            </>
+                                                        )}
+                                                    </button>
                                                 </div>
                                             )}
                                         </div>
@@ -901,32 +1215,101 @@ export function Study() {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        {/* Input Area */}
+                        {/* Input Area with Speech-to-Text & Text-to-Speech */}
                         <div className="p-3.5 bg-white border-t border-purple-100/70">
-                            <div className="relative flex items-end gap-2 max-w-4xl mx-auto">
+                            {/* Listening Active Banner */}
+                            {isListening && (
+                                <div className="flex items-center justify-between bg-red-50 border border-red-200/80 text-red-700 px-3 py-1.5 rounded-xl mb-2 text-xs font-semibold animate-pulse max-w-4xl mx-auto">
+                                    <span className="flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                                        Listening to your microphone... Speak your question now.
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={toggleListening}
+                                        className="text-[11px] underline hover:text-red-900 font-bold ml-2 cursor-pointer"
+                                    >
+                                        Done Speaking
+                                    </button>
+                                </div>
+                            )}
+
+                            <div className="relative flex items-center gap-2 max-w-4xl mx-auto">
+                                {/* Text to Speech button in chatbox (reads latest AI response) */}
+                                {messages.some(m => m.role === 'assistant') && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={toggleTtsLatest}
+                                        className={`w-11 h-11 shrink-0 rounded-xl transition-all border ${
+                                            isSpeaking && speakingMessageId === 'chatbox'
+                                                ? 'bg-purple-100 border-[#603DD9] text-[#603DD9] shadow-md shadow-[#603DD9]/20 animate-pulse'
+                                                : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-[#603DD9] hover:bg-purple-50 hover:border-purple-200'
+                                        }`}
+                                        title={isSpeaking && speakingMessageId === 'chatbox' ? "Stop reading aloud" : "Read aloud latest AI response (Text to Speech)"}
+                                        aria-label="Read latest response aloud"
+                                    >
+                                        {isSpeaking && speakingMessageId === 'chatbox' ? (
+                                            <VolumeX className="w-4 h-4 text-[#603DD9]" />
+                                        ) : (
+                                            <Volume2 className="w-4 h-4" />
+                                        )}
+                                    </Button>
+                                )}
+
                                 <div className="relative flex-1">
                                     <Input
-                                        placeholder={selectedDocuments.length > 0 ? `Ask about your ${selectedDocuments.length} active doc(s)...` : "Ask any study question or concept..."}
-                                        className="pr-12 py-3 h-11 text-xs sm:text-sm shadow-xs border-slate-200 bg-slate-50/70 focus:bg-white focus:border-[#603DD9] focus:ring-2 focus:ring-[#603DD9]/20 transition-all rounded-xl font-medium"
+                                        placeholder={
+                                            isListening
+                                                ? "Listening... Speak your question now..."
+                                                : (selectedDocuments.length > 0 ? `Ask about your ${selectedDocuments.length} active doc(s)...` : "Ask any study question or concept...")
+                                        }
+                                        className={`pr-20 py-3 h-11 text-xs sm:text-sm shadow-xs border-slate-200 bg-slate-50/70 focus:bg-white focus:border-[#603DD9] focus:ring-2 focus:ring-[#603DD9]/20 transition-all rounded-xl font-medium ${
+                                            isListening ? 'ring-2 ring-red-400 border-red-400 bg-red-50/40 text-slate-800' : ''
+                                        }`}
                                         value={message}
                                         onChange={e => setMessage(e.target.value)}
                                         onKeyDown={e => e.key === 'Enter' && !e.shiftKey && !isLoading && (e.preventDefault(), handleSend())}
                                         aria-label="Chat Message"
                                     />
-                                    <Button
-                                        size="icon"
-                                        className={`absolute right-1 top-1 w-9 h-9 rounded-lg transition-all ${
-                                            message.trim() 
-                                                ? 'bg-gradient-to-r from-[#603DD9] to-[#9E4CEC] text-white shadow-md shadow-[#603DD9]/25 hover:opacity-95 hover:scale-105 active:scale-95' 
-                                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                                        }`}
-                                        onClick={handleSend}
-                                        disabled={isLoading || !message.trim()}
-                                        aria-label="Send message"
-                                        title="Send message"
-                                    >
-                                        <Send className="w-4 h-4" />
-                                    </Button>
+                                    <div className="absolute right-1 top-1 flex items-center gap-1">
+                                        {/* Speech to Text Microphone Button */}
+                                        <Button
+                                            type="button"
+                                            size="icon"
+                                            className={`w-9 h-9 rounded-lg transition-all ${
+                                                isListening
+                                                    ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-md shadow-red-500/30'
+                                                    : 'bg-transparent text-slate-500 hover:text-[#603DD9] hover:bg-purple-50'
+                                            }`}
+                                            onClick={toggleListening}
+                                            title={isListening ? "Stop listening (Speech to Text)" : "Voice input (Speech to Text)"}
+                                            aria-label="Voice input"
+                                        >
+                                            {isListening ? (
+                                                <MicOff className="w-4 h-4" />
+                                            ) : (
+                                                <Mic className="w-4 h-4" />
+                                            )}
+                                        </Button>
+
+                                        {/* Send Button */}
+                                        <Button
+                                            size="icon"
+                                            className={`w-9 h-9 rounded-lg transition-all ${
+                                                message.trim() 
+                                                    ? 'bg-gradient-to-r from-[#603DD9] to-[#9E4CEC] text-white shadow-md shadow-[#603DD9]/25 hover:opacity-95 hover:scale-105 active:scale-95' 
+                                                    : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                            }`}
+                                            onClick={handleSend}
+                                            disabled={isLoading || !message.trim()}
+                                            aria-label="Send message"
+                                            title="Send message"
+                                        >
+                                            <Send className="w-4 h-4" />
+                                        </Button>
+                                    </div>
                                 </div>
                             </div>
                             <p className="text-center text-[11px] text-slate-600 mt-2 flex items-center justify-center gap-1.5 font-medium">

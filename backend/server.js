@@ -1,5 +1,6 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const express = require('express')
@@ -35,8 +36,10 @@ const PRIMARY_MODEL = "Qwen/Qwen2.5-72B-Instruct";
 const BACKUP_MODEL = "meta-llama/Llama-3.3-70B-Instruct";
 
 // Supabase Setup
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://qwzreaommojtkfrzagwu.supabase.co';
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://qwzreaommojtkfrzagwu.supabase.co';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY 
+    || process.env.SUPABASE_ANON_KEY
+    || process.env.VITE_SUPABASE_ANON_KEY
     || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF3enJlYW9tbW9qdGtmcnphZ3d1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTMyMzE0MiwiZXhwIjoyMDg0ODk5MTQyfQ.BWBbTcZ0Mv1JRY9VKCFTpc4qmDpTv_NS2DlX5R0fwzs';
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
@@ -120,7 +123,39 @@ function chunkText(text, size = 1000) {
 function synthesizeDocumentResponse(userQuery, contextText) {
     if (!contextText || contextText.trim().length === 0) return null;
 
+    // Parse individual excerpts with document title and page
+    const excerptRegex = /\[Source Excerpt \d+\s*\|\s*Document:\s*"([^"]+)",\s*Page\s*(\d+)\]:\s*([\s\S]*?)(?=(?:\[Source Excerpt|---|\n\n---\n\n|$))/gi;
+    const excerpts = [];
+    let match;
+    while ((match = excerptRegex.exec(contextText)) !== null) {
+        excerpts.push({
+            doc: match[1] || 'Your Notes',
+            page: match[2],
+            content: (match[3] || '').trim()
+        });
+    }
+
+    if (excerpts.length === 0) {
+        const pageMatches = [...contextText.matchAll(/(?:Document:\s*"([^"]+)")?[^\]]*Page\s*(\d+)/gi)];
+        if (pageMatches.length > 0) {
+            excerpts.push({
+                doc: pageMatches[0][1] || 'Your Notes',
+                page: pageMatches[0][2],
+                content: contextText
+            });
+        }
+    }
+
+    // Helper to extract ONLY the exact single page where this topic/context is present
+    const getExactRefSummary = (keyword) => {
+        if (excerpts.length === 0) return '';
+        const found = excerpts.find(e => e.content.toLowerCase().includes(keyword.toLowerCase()));
+        const target = found || excerpts[0];
+        return `\n\n---\n📖 **Referenced Sources & Pages:**\n* **${target.doc}**, Page ${target.page} - Primary context reference`;
+    };
+
     const cleanContext = contextText
+        .replace(/\[Source Excerpt \d+.*?\]:?/gi, '')
         .replace(/\[Excerpt \d+.*?\]:?/gi, '')
         .replace(/---+/g, ' ')
         .replace(/\s+/g, ' ')
@@ -130,6 +165,7 @@ function synthesizeDocumentResponse(userQuery, contextText) {
 
     // 1. Topic: Block Cipher
     if (lowerQ.includes('block cipher') || (lowerQ.includes('cipher') && lowerQ.includes('block'))) {
+        const exactRef = getExactRefSummary('block cipher');
         return `### What is a Block Cipher?
 
 A **Block Cipher** is a fundamental symmetric-key cryptographic technique that encrypts an entire fixed-length block of plaintext (typically 64 or 128 bits) into a block of ciphertext of the same size, using a shared secret key.
@@ -146,11 +182,12 @@ A **Block Cipher** is a fundamental symmetric-key cryptographic technique that e
 * **Block vs. Stream Ciphers**: While stream ciphers encrypt data continuously one bit or byte at a time, block ciphers process fixed-size discrete chunks.
 * **Diffusion & Confusion**: Ensure strong security by thoroughly scrambling the relationship between the key and ciphertext.
 
-*Common Examples*: **DES** (Data Encryption Standard - 64-bit blocks), **3DES**, and **AES** (Advanced Encryption Standard - 128-bit blocks).`;
+*Common Examples*: **DES** (Data Encryption Standard - 64-bit blocks), **3DES**, and **AES** (Advanced Encryption Standard - 128-bit blocks).` + exactRef;
     }
 
     // 2. Topic: Stream Cipher
     if (lowerQ.includes('stream cipher')) {
+        const exactRef = getExactRefSummary('stream cipher');
         return `### What is a Stream Cipher?
 
 A **Stream Cipher** is a symmetric encryption algorithm that encrypts continuous streams of plaintext one bit or byte at a time, using a pseudo-random keystream generated from a secret key.
@@ -160,11 +197,12 @@ A **Stream Cipher** is a symmetric encryption algorithm that encrypts continuous
 * **Speed & Low Latency**: Very fast and requires minimal memory/buffering, making it ideal for real-time communications and hardware devices.
 * **Comparison**: Block ciphers operate on fixed-size blocks; stream ciphers operate on continuous variable-length streams without padding.
 
-*Common Examples*: **RC4**, **A5/1** (used in GSM), and **ChaCha20**.`;
+*Common Examples*: **RC4**, **A5/1** (used in GSM), and **ChaCha20**.` + exactRef;
     }
 
     // 3. Topic: Symmetric Key Encryption
     if (lowerQ.includes('symmetric') && (lowerQ.includes('cipher') || lowerQ.includes('encryption') || lowerQ.includes('key'))) {
+        const exactRef = getExactRefSummary('symmetric');
         return `### Symmetric Key Encryption
 
 **Symmetric Key Encryption** (conventional or secret-key encryption) is a cryptographic system where both the communicating parties share the same secret key for both encryption and decryption.
@@ -176,11 +214,12 @@ A **Stream Cipher** is a symmetric encryption algorithm that encrypts continuous
 4. **Ciphertext**: The scrambled, unreadable output message.
 5. **Decryption Algorithm**: Uses the identical secret key to invert the process and recover the original plaintext.
 
-*Prominent Algorithms*: **AES**, **DES**, **Blowfish**, and **RC4**.`;
+*Prominent Algorithms*: **AES**, **DES**, **Blowfish**, and **RC4**.` + exactRef;
     }
 
     // 4. Topic: Feistel Cipher Structure
     if (lowerQ.includes('feistel')) {
+        const exactRef = getExactRefSummary('feistel');
         return `### Feistel Cipher Structure
 
 The **Feistel Cipher** structure, proposed by Horst Feistel, is a general cryptographic design model upon which many block ciphers (including DES) are built.
@@ -189,12 +228,12 @@ The **Feistel Cipher** structure, proposed by Horst Feistel, is a general crypto
 1. **Block Division**: The plaintext block is split into two equal halves: **Left Plain Text (LPT)** and **Right Plain Text (RPT)**.
 2. **Round Processing**: In each round, the right half undergoes a round function with a subkey and is XORed with the left half. Then the two halves are swapped.
 3. **Substitution & Permutation**: It alternates between substitution (confusion) and transposition/permutation (diffusion).
-4. **Reversibility**: A major advantage of Feistel ciphers is that decryption uses the exact same algorithm structure, simply applying subkeys in reverse order.`;
+4. **Reversibility**: A major advantage of Feistel ciphers is that decryption uses the exact same algorithm structure, simply applying subkeys in reverse order.` + exactRef;
     }
 
     // 5. Generic Structured Synthesis for any other query:
     const sentences = cleanContext.match(/[^.!?]+[.!?]+/g) || cleanContext.split('\n');
-    const queryTerms = userQ.replace(/[^\w\s]/g, '').toLowerCase().split(/\s+/).filter(w => w.length > 2 && !['what', 'is', 'the', 'how', 'why', 'are', 'tell', 'about', 'explain'].includes(w));
+    const queryTerms = userQuery.replace(/[^\w\s]/g, '').toLowerCase().split(/\s+/).filter(w => w.length > 2 && !['what', 'is', 'the', 'how', 'why', 'are', 'tell', 'about', 'explain'].includes(w));
 
     const scored = sentences.map(s => {
         const sl = s.toLowerCase();
@@ -217,7 +256,12 @@ The **Feistel Cipher** structure, proposed by Horst Feistel, is a general crypto
                 response += `* **Point ${i + 1}**: ${cleaned}\n`;
             });
         }
-        return response;
+        // Find which excerpt contained the top matched sentence
+        const topExcerpt = excerpts.find(e => e.content.toLowerCase().includes(top[0].toLowerCase().slice(0, 30))) || excerpts[0];
+        const exactRef = topExcerpt
+            ? `\n\n---\n📖 **Referenced Sources & Pages:**\n* **${topExcerpt.doc}**, Page ${topExcerpt.page} - Primary context source`
+            : '';
+        return response + exactRef;
     }
 
     return null;
@@ -259,7 +303,27 @@ function extractAndParseJSON(rawOutput) {
                     .replace(/[\u0000-\u001F\u007F-\u009F]/g, (c) => c === '\n' || c === '\r' || c === '\t' ? c : '');
                 return JSON.parse(fixed);
             } catch (_) {}
-            throw err;
+        }
+    }
+
+    // 4. Robust auto-repair for truncated JSON output (e.g., long 10-question quizzes or flashcard sets)
+    const arrayKeys = ['"quiz"', '"flashcards"', '"tasks"'];
+    for (const key of arrayKeys) {
+        const keyIdx = cleaned.indexOf(key);
+        if (keyIdx !== -1) {
+            let pos = cleaned.lastIndexOf('}');
+            while (pos > keyIdx) {
+                const candidate = cleaned.substring(start !== -1 ? start : 0, pos + 1) + '\n  ]\n}';
+                try {
+                    const parsed = JSON.parse(candidate);
+                    const arrProp = key.replace(/"/g, '');
+                    if (parsed && Array.isArray(parsed[arrProp]) && parsed[arrProp].length > 0) {
+                        console.log(`🛡️ Recovered ${parsed[arrProp].length} items from truncated ${arrProp} JSON!`);
+                        return parsed;
+                    }
+                } catch (_) {}
+                pos = cleaned.lastIndexOf('}', pos - 1);
+            }
         }
     }
 
@@ -280,14 +344,46 @@ async function callAI(messages, retries = 3, options = {}) {
 
     // 1. Primary: Google Gemini API
     if (geminiKey) {
-        const geminiModels = ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash'];
+        // For structured JSON (e.g. 10-question detailed quizzes), Native Gemini supports full 8192 output tokens without artificial cutoff
+        if (wantsJson) {
+            try {
+                const nonSystemMessages = messages.filter(m => m.role !== 'system');
+                const contents = nonSystemMessages.map(m => ({
+                    role: m.role === 'assistant' ? 'model' : 'user',
+                    parts: [{ text: m.content }]
+                }));
+
+                const payload = { contents };
+                if (systemPrompt) {
+                    payload.systemInstruction = { parts: [{ text: systemPrompt }] };
+                }
+                payload.generationConfig = {
+                    responseMimeType: 'application/json',
+                    maxOutputTokens: 8192,
+                    temperature: 0.3
+                };
+
+                const nativeRes = await axios.post(
+                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+                    payload,
+                    { timeout: 45000 }
+                );
+
+                const text = nativeRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) return text;
+            } catch (nativeErr) {
+                console.error('❌ Native Gemini JSON Error:', nativeErr.response?.data?.error?.message || nativeErr.message);
+            }
+        }
+
+        const geminiModels = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest'];
         for (const model of geminiModels) {
             try {
                 const requestPayload = {
                     model,
                     messages,
-                    max_tokens: maxTokens,
-                    temperature: wantsJson ? 0.4 : 0.7
+                    max_tokens: wantsJson ? 8192 : maxTokens,
+                    temperature: wantsJson ? 0.3 : 0.7
                 };
                 if (wantsJson) {
                     requestPayload.response_format = { type: 'json_object' };
@@ -295,7 +391,7 @@ async function callAI(messages, retries = 3, options = {}) {
 
                 const res = await axios.post('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', requestPayload, {
                     headers: { 'Authorization': `Bearer ${geminiKey}`, 'Content-Type': 'application/json' },
-                    timeout: 35000
+                    timeout: 40000
                 });
                 if (res.data?.choices?.[0]?.message?.content) {
                     return res.data.choices[0].message.content;
@@ -305,7 +401,7 @@ async function callAI(messages, retries = 3, options = {}) {
             }
         }
 
-        // Direct Native Gemini endpoint fallback
+        // Direct Native Gemini endpoint fallback for chat
         try {
             const nonSystemMessages = messages.filter(m => m.role !== 'system');
             const contents = nonSystemMessages.map(m => ({
@@ -318,13 +414,13 @@ async function callAI(messages, retries = 3, options = {}) {
                 payload.systemInstruction = { parts: [{ text: systemPrompt }] };
             }
             if (wantsJson) {
-                payload.generationConfig = { responseMimeType: 'application/json' };
+                payload.generationConfig = { responseMimeType: 'application/json', maxOutputTokens: 8192 };
             }
 
             const nativeRes = await axios.post(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
                 payload,
-                { timeout: 35000 }
+                { timeout: 40000 }
             );
 
             const text = nativeRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -508,6 +604,53 @@ async function parsePdfBuffer(buffer) {
     throw new Error("PDF parser function could not be loaded");
 }
 
+async function extractPdfPages(buffer) {
+    const pages = [];
+    const pagerender = function(pageData) {
+        return pageData.getTextContent().then(function(textContent) {
+            let lastY, text = '';
+            for (let item of textContent.items) {
+                if (lastY == item.transform[5] || !lastY) {
+                    text += item.str;
+                } else {
+                    text += '\n' + item.str;
+                }
+                lastY = item.transform[5];
+            }
+            pages.push({
+                pageNumber: pageData.pageIndex + 1,
+                text: (text || '').trim()
+            });
+            return text;
+        });
+    };
+
+    try {
+        let pdfParser = pdf;
+        if (typeof pdfParser !== 'function' && pdfParser?.default) {
+            pdfParser = pdfParser.default;
+        }
+        if (typeof pdfParser !== 'function') {
+            pdfParser = require('pdf-parse');
+        }
+        await pdfParser(buffer, { pagerender });
+    } catch (e) {
+        console.warn("⚠️ PDF page extraction warning:", e.message);
+    }
+
+    if (pages.length === 0) {
+        try {
+            const fullText = await parsePdfBuffer(buffer);
+            return [{ pageNumber: 1, text: fullText }];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    pages.sort((a, b) => a.pageNumber - b.pageNumber);
+    return pages;
+}
+
 async function processDocument(docId, db = supabase) {
     console.log(`📄 Processing document: ${docId}`);
 
@@ -528,43 +671,62 @@ async function processDocument(docId, db = supabase) {
     const fileResponse = await axios.get(signedUrlResult.data.signedUrl, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(fileResponse.data);
 
-    let text = "";
+    let docPages = [];
     const lowerPath = doc.file_path.toLowerCase();
 
     if (lowerPath.endsWith('.pdf')) {
-        console.log("📑 Processing PDF...");
-        text = await parsePdfBuffer(buffer);
+        console.log("📑 Processing PDF with page extraction...");
+        docPages = await extractPdfPages(buffer);
+        console.log(`✅ Extracted ${docPages.length} PDF pages.`);
     } else if (lowerPath.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
         console.log("🖼️ Processing IMAGE with OCR...");
         const { data: { text: extractedText } } = await Tesseract.recognize(buffer, 'eng');
-        text = extractedText;
-        console.log(`✅ OCR Complete. Extracted ${text.length} chars.`);
+        docPages = [{ pageNumber: 1, text: extractedText }];
+        console.log(`✅ OCR Complete. Extracted ${extractedText.length} chars.`);
     } else {
-        text = buffer.toString('utf-8');
+        const text = buffer.toString('utf-8');
+        docPages = [{ pageNumber: 1, text }];
     }
 
-    if (!text || text.trim().length < 5) {
+    const validPages = docPages.filter(p => p.text && p.text.trim().length >= 5);
+    if (validPages.length === 0) {
         throw new Error("Text extraction failed or content too short.");
     }
+
+    // Update document pages count in database
+    await db.from('documents').update({ pages: docPages.length, status: 'ready' }).eq('id', docId);
 
     // Clear and Update Chunks
     await db.from('document_chunks').delete().eq('document_id', docId);
 
-    const chunks = chunkText(text, 500);
-    console.log(`Debug: Split into ${chunks.length} chunks.`);
+    const chunkItems = [];
+    for (const page of validPages) {
+        const chunks = chunkText(page.text, 400);
+        for (const c of chunks) {
+            if (c.trim().length >= 10) {
+                chunkItems.push({
+                    page_number: page.pageNumber,
+                    content: c.trim()
+                });
+            }
+        }
+    }
+
+    console.log(`Debug: Split into ${chunkItems.length} page-indexed chunks.`);
     let successCount = 0;
 
-    for (const [i, chunk] of chunks.entries()) {
+    for (const [i, item] of chunkItems.entries()) {
         let embedding = null;
         try {
-            embedding = await getEmbedding(chunk);
+            embedding = await getEmbedding(item.content);
         } catch (e) {
             console.warn(`⚠️ Embedding skipped for chunk ${i + 1}:`, e.message);
         }
 
         const chunkData = {
             document_id: docId,
-            content: chunk,
+            page_number: item.page_number,
+            content: item.content,
         };
         if (embedding && Array.isArray(embedding)) {
             chunkData.embedding = embedding;
@@ -579,17 +741,101 @@ async function processDocument(docId, db = supabase) {
         }
     }
 
-    if (successCount === 0 && chunks.length > 0) {
+    if (successCount === 0 && chunkItems.length > 0) {
         throw new Error("Failed to insert document chunks into database.");
     }
 
-    await db.from('documents').update({ status: 'ready' }).eq('id', docId);
-    console.log(`🎉 Processed ${successCount}/${chunks.length} chunks for doc: ${doc.title || docId}`);
-    return { success: true, chunks: successCount };
+    return {
+        success: true,
+        pages: docPages.length,
+        chunksCount: successCount
+    };
 }
 
 // --- Routes ---
 const router = express.Router();
+
+// Instant Signup Endpoint with Auto-Confirmation
+router.post(['/auth/signup', '/api/auth/signup'], async (req, res) => {
+    try {
+        const { email, password, fullName } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ success: false, error: "Email and password are required" });
+        }
+
+        if (!supabase) {
+            return res.status(500).json({ success: false, error: "Supabase service client not configured" });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        
+        // Check if user already exists
+        const { data: userList } = await supabase.auth.admin.listUsers();
+        const existingUser = userList?.users?.find(u => u.email?.toLowerCase() === cleanEmail);
+
+        let targetUser = null;
+        if (existingUser) {
+            // Update existing user with new password and auto-confirm email
+            const { data: updated, error: updateErr } = await supabase.auth.admin.updateUserById(existingUser.id, {
+                password: password,
+                email_confirm: true,
+                user_metadata: { full_name: fullName || existingUser.user_metadata?.full_name || '' }
+            });
+            if (updateErr) throw updateErr;
+            targetUser = updated.user;
+            console.log(`✅ Existing user updated and auto-confirmed: ${cleanEmail}`);
+        } else {
+            // Create user with email_confirm: true directly using service role
+            const { data, error } = await supabase.auth.admin.createUser({
+                email: cleanEmail,
+                password: password,
+                email_confirm: true,
+                user_metadata: {
+                    full_name: fullName || ''
+                }
+            });
+            if (error) {
+                return res.status(400).json({ success: false, error: error.message });
+            }
+            targetUser = data.user;
+            console.log(`✅ New user auto-confirmed and registered: ${cleanEmail}`);
+        }
+
+        console.log(`✅ New user auto-confirmed and registered: ${data.user.email}`);
+        return res.json({ success: true, user: targetUser });
+    } catch (err) {
+        console.error("❌ Signup endpoint error:", err.message);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
+// Password Sync / Reset Endpoint
+router.post(['/auth/reset-password', '/api/auth/reset-password'], async (req, res) => {
+    try {
+        const { email, newPassword } = req.body;
+        if (!email || !newPassword) {
+            return res.status(400).json({ success: false, error: "Email and new password are required" });
+        }
+        const cleanEmail = email.trim().toLowerCase();
+        const { data: userList, error: listErr } = await supabase.auth.admin.listUsers();
+        if (listErr) throw listErr;
+        const target = userList?.users?.find(u => u.email?.toLowerCase() === cleanEmail);
+        if (!target) {
+            return res.status(404).json({ success: false, error: "No account found with this email" });
+        }
+        const { error: updateErr } = await supabase.auth.admin.updateUserById(target.id, {
+            password: newPassword,
+            email_confirm: true
+        });
+        if (updateErr) throw updateErr;
+        console.log(`✅ Password updated & confirmed for: ${cleanEmail}`);
+        return res.json({ success: true, message: "Password updated successfully" });
+    } catch (err) {
+        console.error("❌ Reset password error:", err.message);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 router.get(['/health', '/api/health'], (req, res) => {
     res.json({
@@ -617,8 +863,18 @@ router.post(['/chat', '/api/chat'], async (req, res) => {
         const db = getSupabaseClient(req);
         const { message, documentIds = [], conversationHistory = [] } = req.body;
         let context = "";
+        let references = [];
+        let chunks = [];
+        let docTitleMap = new Map();
 
         if (documentIds.length > 0) {
+            // Fetch document metadata (titles)
+            const { data: docList } = await db
+                .from('documents')
+                .select('id, title')
+                .in('id', documentIds);
+            docTitleMap = new Map((docList || []).map(d => [d.id, d.title]));
+
             // 1. Ensure all selected documents have chunks processed
             for (const docId of documentIds) {
                 const { count } = await db
@@ -637,7 +893,7 @@ router.post(['/chat', '/api/chat'], async (req, res) => {
             }
 
             // 2. Perform semantic vector search
-            let chunks = [];
+            chunks = [];
             const queryEmbedding = await getEmbedding(message);
             if (queryEmbedding) {
                 const { data: matchedChunks, error: rpcError } = await db.rpc('match_document_chunks', {
@@ -657,7 +913,7 @@ router.post(['/chat', '/api/chat'], async (req, res) => {
                 console.log("ℹ️ Semantic search returned 0 chunks. Falling back to direct document chunks...");
                 const { data: directChunks } = await db
                     .from('document_chunks')
-                    .select('content, page_number')
+                    .select('id, document_id, content, page_number')
                     .in('document_id', documentIds)
                     .limit(15);
 
@@ -667,23 +923,54 @@ router.post(['/chat', '/api/chat'], async (req, res) => {
             }
 
             if (chunks && chunks.length > 0) {
-                context = chunks.map((c, i) => `[Excerpt ${i + 1}${c.page_number ? `, Page ${c.page_number}` : ''}]: ${c.content}`).join('\n\n---\n\n');
-                console.log(`✅ Found and supplied ${chunks.length} context chunks to AI.`);
+                context = chunks.map((c, i) => {
+                    const docTitle = docTitleMap.get(c.document_id) || 'Document';
+                    const pageText = c.page_number ? `Page ${c.page_number}` : 'Full Document';
+                    return `[Source Excerpt ${i + 1} | Document: "${docTitle}", ${pageText}]:\n${c.content}`;
+                }).join('\n\n---\n\n');
+
+                const refSet = new Set();
+                references = chunks
+                    .map(c => ({
+                        documentId: c.document_id,
+                        documentTitle: docTitleMap.get(c.document_id) || 'Document',
+                        pageNumber: c.page_number || 1
+                    }))
+                    .filter(ref => {
+                        const key = `${ref.documentId}-${ref.pageNumber}`;
+                        if (refSet.has(key)) return false;
+                        refSet.add(key);
+                        return true;
+                    });
+
+                console.log(`✅ Found and supplied ${chunks.length} context chunks to AI with ${references.length} unique page references.`);
             } else {
                 console.log("⚠️ No relevant document chunks found.");
             }
         }
 
-        const systemPrompt = `You are StudyMate+, an intelligent AI tutor.
-        
-INSTRUCTIONS:
-1. Context First: Always prioritize the provided "DOC CONTEXT" (user's files).
-2. Strict Retrieval: If the answer is in the context, explain it clearly using that information.
-3. If asked to summarize, explain, or answer questions about the document, synthesize directly from the provided DOC CONTEXT.
-4. General Knowledge Fallback: If no document context is provided at all, you MAY answer using your general knowledge.
-5. Disclaimer: If you use general knowledge, you MUST start with a phrase like: "This isn't explicitly in your documents, but generally..." to let the user know.
+        const systemPrompt = `You are StudyMate+, an intelligent AI academic tutor.
 
-Do not refuse to answer unless the question is harmful.`;
+CORE INSTRUCTIONS:
+1. Context First: Prioritize the provided "DOC CONTEXT" from the student's study materials.
+2. Context-Aware Citations & References (MANDATORY):
+   - When you answer using information from DOC CONTEXT, you MUST conclude your response with a dedicated references section at the very end in this exact markdown format:
+
+---
+📖 **Referenced Sources & Pages:**
+* **[Document Title]**, Page [X] - [Brief note on what topic/concept was drawn from this page]
+
+   - IMPORTANT: Cite ONLY the single most relevant page that your answer primarily draws from. Do NOT list multiple pages. Pick the one page that contains the core information used in your answer.
+   - If the answer genuinely spans two different documents, you may cite one page from each document, but never cite multiple pages from the same document.
+   - Only cite the page that actually contributed the main information to your answer.
+3. General Knowledge Fallback:
+   - If no document context is provided or the documents do not cover the user's question, answer using your general knowledge, but start with:
+     "This isn't explicitly in your selected documents, but generally..."
+     and at the end add:
+     "--- \nℹ️ *Answered from general knowledge (not found in selected documents)*"
+4. Formatting:
+   - Provide clean, professional explanations using Markdown (bold key terms, lists, clear paragraphs).
+   - Ensure the referenced pages section is always at the very bottom of the response so students can easily verify the material in their original documents.`;
 
         const messages = [
             { role: "system", content: systemPrompt },
@@ -700,12 +987,50 @@ Do not refuse to answer unless the question is harmful.`;
         ];
 
         const response = await callAI(messages);
-        res.json({ success: true, response });
+
+        // Extract ONLY the exact single page where the context was taken from
+        let exactReferences = [];
+        const match = response.match(/📖\s*\*\*Referenced Sources & Pages:\*\*[\s\S]*?\*\*(.*?)\*\*.*?Page\s*(\d+)(?:\s*-\s*([^\n\r]+))?/i);
+        if (match) {
+            const citedDocTitle = match[1].trim();
+            const citedPage = parseInt(match[2], 10);
+            const topicDesc = match[3] ? match[3].trim() : 'Primary context source';
+            const matchingDoc = Array.from(docTitleMap.entries()).find(([id, title]) =>
+                title.toLowerCase() === citedDocTitle.toLowerCase() || citedDocTitle.toLowerCase().includes(title.toLowerCase())
+            );
+            exactReferences = [{
+                documentId: matchingDoc ? matchingDoc[0] : (chunks[0]?.document_id || ''),
+                documentTitle: citedDocTitle || docTitleMap.get(chunks[0]?.document_id) || 'Document',
+                pageNumber: citedPage,
+                topicNote: topicDesc
+            }];
+        } else if (chunks.length > 0) {
+            // Take strictly the highest similarity matched chunk (exact single page)
+            exactReferences = [{
+                documentId: chunks[0].document_id,
+                documentTitle: docTitleMap.get(chunks[0].document_id) || 'Document',
+                pageNumber: chunks[0].page_number || 1,
+                topicNote: 'Primary context source'
+            }];
+        }
+
+        // Clean up markdown in response if multiple pages were listed
+        let cleanedResponse = response;
+        if (exactReferences.length > 0) {
+            const refHeaderMatch = /(---\s*\n📖\s*\*\*Referenced Sources & Pages:\*\*[\s\S]*)$/i;
+            if (refHeaderMatch.test(cleanedResponse)) {
+                const exact = exactReferences[0];
+                cleanedResponse = cleanedResponse.replace(refHeaderMatch, `---\n📖 **Referenced Sources & Pages:**\n* **${exact.documentTitle}**, Page ${exact.pageNumber} - ${exact.topicNote || 'Primary context source'}`);
+            }
+        }
+
+        res.json({ success: true, response: cleanedResponse, references: exactReferences });
     } catch (error) {
         console.error("❌ Chat error:", error.message);
         res.json({
             success: true,
-            response: `⚠️ **Notice**: Unable to process chat completion right now (${error.message}).\n\nTo ensure reliable AI answers, add a free \`GROQ_API_KEY\` or \`GEMINI_API_KEY\` in your \`.env\` file.`
+            response: `⚠️ **Notice**: Unable to process chat completion right now (${error.message}).\n\nTo ensure reliable AI answers, add a free \`GROQ_API_KEY\` or \`GEMINI_API_KEY\` in your \`.env\` file.`,
+            references: []
         });
     }
 });

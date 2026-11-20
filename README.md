@@ -35,8 +35,8 @@
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/HARSHITHAPRIYAJAVAJI/STUDY-MATE-.git
-   cd STUDY-MATE-
+   git clone https://github.com/Thrisha1411/StudyMate.git
+   cd StudyMate
    ```
 
 2. **Install Frontend Dependencies**
